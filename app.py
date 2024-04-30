@@ -1,24 +1,13 @@
 from astrapy.db import AstraDB
-import base64
 from datasets import load_dataset
 from dotenv import load_dotenv
-from langchain.chains.question_answering import load_qa_chain
 from langchain.schema import Document
 from langchain_openai import OpenAIEmbeddings
-#from langchain_community.vectorstores import AstraDB as astra 
 from langchain_astradb import AstraDBVectorStore as astra 
-from openai import OpenAI
 import os
 import requests
 import streamlit as st
-from PIL import Image
 import json
-
-
-
-def encode_image(image_file):
-    return base64.b64encode(image_file.read()).decode('utf-8')
-
 
 # Load API secrets
 load_dotenv()
@@ -28,20 +17,18 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 CLOUDFLARE_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID")
 CLOUDFLARE_API_TOKEN= os.environ.get("CF_API_TOKEN")
 
-# Initialization
+# init astra
 db = AstraDB(
   token=ASTRA_DB_APPLICATION_TOKEN,
   api_endpoint=ASTRA_DB_API_ENDPOINT)
 
 print(f"Connected to Astra DB: {db.get_collections()}")
 
-url =f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/meta/llama-2-7b-chat-fp16"
-
-def query_llama1(char_sim_search, species_sim_search, vehicle_sim_search, planet_sim_search, starship_sim_search):
-    prompt = f"Return only a summarization of the Star Wars data contained in the following JSON objects. A character can only be from one planet: {char_sim_search} {species_sim_search} {vehicle_sim_search} {planet_sim_search} {starship_sim_search}"
-    print(f'prompt {prompt}')
+# takes in many objects from sim search of different datasets, returns most similar according to the text input from streamlit web app
+def generate_text_from_sim_search(char_sim_search, species_sim_search, vehicle_sim_search, planet_sim_search, starship_sim_search, url):
+    prompt = f"Summarize the Star Wars data contained in the following data and return nothing else. {char_sim_search} {species_sim_search} {vehicle_sim_search} {planet_sim_search} {starship_sim_search}"
     payload = {
-        "max_tokens": 300,
+        "max_tokens": 400, # max of max tokens?
         "prompt": prompt,
         "raw": False,
         "stream": False
@@ -57,11 +44,12 @@ def query_llama1(char_sim_search, species_sim_search, vehicle_sim_search, planet
     print(result)
     return result
 
-def query_llama2(res):
-    prompt = f"Return only a story based off of the following: {res}"
+# generate story based on string from generate_text_from_sim_search function containing similarity search results + movie rating
+def gen_story_from_sim_search_and_movie_rating(res, movie_rating, url):
+    prompt = f"Return only a humorous {movie_rating}-rated story based off of the following and nothing else. Do not mention a homeworld. The story should have an introduction paragraph, a villain and conflict, and a conclusion paragraph: {res}"
     print(f'prompt {prompt}')
     payload = {
-        "max_tokens": 9999,
+        "max_tokens": 2000,
         "prompt": prompt,
         "raw": False,
         "stream": False
@@ -73,17 +61,14 @@ def query_llama2(res):
 
     response = requests.request("POST", url, json=payload, headers=headers)
     parsed_data = json.loads(response.text)
+    print(f'parsed_data {parsed_data}')
     result2 = parsed_data['result']['response']
-    print(result2)
-    return result2
-
-def query_sdxl(payload):
-  api_url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/bytedance/stable-diffusion-xl-lightning"
-  response = requests.post(api_url, headers={"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"}, json=payload)
-  return response.json()
+    print(f'result2 {result2}')
+    return parsed_data
 
 dataCache = {}
 
+# init docs arrs for each dataset in HF
 char_docs = []
 veh_docs = []
 plan_docs = []
@@ -97,6 +82,7 @@ def loaddata(dataset):  #lizziepikachu/starwars_characters"
     dataCache[dataset] = data
     return data
 
+# return docs after loading from HF w/ langchain func loaddata, loop through datasets and pull specific data columns, add a lc doc with the name and metadata tags
 def ret_docs():
     sw_char_huggingface_dataset = loaddata("lizziepikachu/starwars_characters")
     sw_vehicle_huggingface_dataset = loaddata("lizziepikachu/starwars_vehicles")
@@ -137,23 +123,61 @@ def ret_docs():
 
 print(f'char_docs {char_docs}, veh_docs {veh_docs}, plan_docs {plan_docs}, ss_docs {ss_docs}, species_docs {species_docs}') #
 
-
 # Set up Streamlit app
 def main():
-    st.image("leiavader-poe.jpeg", width=400)
-    st.write("⭐️🔫📝")
-    st.header("Generate Star Wars fanfiction")
-    st.write("This Python🐍 web🕸️ app is built👩🏻‍💻 w/ [Streamlit](https://streamlit.io/), [LangChain](https://www.langchain.com/)⛓️, [CloudFlare Workers AI](https://ai.cloudflare.com/), and [Astra DB](https://www.datastax.com/products/datastax-astra)")
-    # User input: PDF file upload
-    char_inp = st.text_input("Who is your favorite character in Star Wars?")
-    planet_inp = st.text_input("Describe a planet you'd want to read about")
-    vehicle_inp = st.text_input("Describe a vehicle you'd like to ride in")
-    starship_inp = st.text_input("Describe a starship you'd like to ride in")
-    species_inp = st.text_input("Describe a species you'd like to read about")
-    if char_inp is not None and vehicle_inp is not None and st.button('enter✅'):
+    st.markdown("""
+        <style>
+            .big-font {
+                font-size:40px !important;
+                color:green;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+    st.markdown('<p class="big-font"<p>Star Wars fanfic generator⭐️🔫📝🤖</p>', unsafe_allow_html=True)
+    st.markdown("![jar jar oh no gif](https://media3.giphy.com/media/3owzWj2ViX6FJj5xMQ/giphy.gif)")
+    st.write(":blue[This Python🐍 web🕸️ app is built👩🏻‍💻 w/ [Streamlit](https://streamlit.io/), [LangChain](https://www.langchain.com/)⛓️, [Cloudflare Workers AI](https://ai.cloudflare.com/), and [Astra DB](https://www.datastax.com/products/datastax-astra)]")
+    char_inp = st.text_input(":red[Who is your favorite character in Star Wars⭐️🔫?]")
+    planet_inp = st.multiselect(
+        ':green[Your ideal vacation spot is]',
+        ['grasslands🦁', 'mountains⛰️', 'tropical🏝️', 'jungle🌲', 'rainforests💧', 'cityscape🌆', 'caves', 'lakes🚤', 'ice canyons', 'urban🏢', 'swamp👹', 'reefs🐟', 'plains', 'volcanoes🌋', 'arid🌵', 'tundra🥶'],
+        ['ice canyons', 'swamp👹', 'cityscape🌆'])
+    planet_inp = str(planet_inp)
+    st.markdown("![do it meme](https://media1.giphy.com/media/3o84sw9CmwYpAnRRni/giphy.gif)")
+    char_labels = ["Jabba the Hutt", "Admiral Ackbar", "Jar Jar Binks", "Count Dooku", "Obi-wan Kenobi", "Poe Dameron"]
+    vehicle_inp = st.select_slider(':orange[On a scale from Jabba the Hutt to Poe Dameron, how 🔥 is the villain✈️ of your fanfic?]', options=char_labels)
+    
+
+    starship_inp = st.text_input(":yellow[Describe a starship⭐️🚀 to drive🚗]")
+    species_inp = st.text_input(":pink[Describe u✌️🥰]")
+    st.markdown("![So uncivilized gif](https://media0.giphy.com/media/xTiIzkLOknx8ELm4Ok/200.gif)")
+    sal_labels = ["R2D2--like the innocent astromech droid, suitable for all", "Chewbacca moaning--could go over young heads", "so uncivilized! May be inappropriate for species < 13", "Jar Jar || Jabba sans-clothes--may contain content !suitable for < 17 w/o parental consent"]
+    salaciousness_met = st.select_slider(":orange[On a scale from R2-D2😇 to Jar Jar sans-clothes🔥, how salacious🥵 should the fanfic be😘?]", options= sal_labels)
+
+    st.markdown("![screaming r2d2 gif](https://assets.teenvogue.com/photos/572a3302321c4faf6ae8a317/16:9/w_2580,c_limit/R2SCREAM.gif)") #screaming r2
+
+    # All models at https://developers.cloudflare.com/workers-ai/models/
+    img_model = st.selectbox(
+    "Choose your character (Text-To-Image model):",
+        options=(
+            "@cf/lykon/dreamshaper-8-lcm",
+            "@cf/bytedance/stable-diffusion-xl-lightning",
+            "@cf/stabilityai/stable-diffusion-xl-base-1.0",
+        ),
+    )
+    text_model = st.selectbox(
+        "Choose your weapon (Text generation model):",
+        options= (
+            "@cf/mistral/mistral-7b-instruct-v0.1",
+            "@cf/meta/llama-2-7b-chat-fp16",
+            "@cf/meta/llama-2-7b-chat-int8"
+        )
+    )
+    url =f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/{text_model}"
+    if char_inp is not None and vehicle_inp is not None and species_inp is not None and st.button('Generate🤖'):
         # load dataset once on page load/on server start
-        with st.spinner('Processing input📈...'):
-            ret_docs()
+        with st.spinner('Processing📈...'):
+            st.markdown("![i will finish what you started gif](https://y.yarn.co/2f4fabe4-6046-4bbd-96bd-3a3ccf9853c9_text.gif)")
+            ret_docs() # load data, add a LangChain document with the name and metadata tags
             embedding_function = OpenAIEmbeddings()
             vstore_char = astra(
                 embedding=embedding_function,
@@ -179,7 +203,7 @@ def main():
                 api_endpoint=ASTRA_DB_API_ENDPOINT,
                 token=ASTRA_DB_APPLICATION_TOKEN,
             )
-            planet_inserted_ids = vstore_planet.add_documents(plan_docs) # plans
+            planet_inserted_ids = vstore_planet.add_documents(plan_docs) # planets
             print(f"\nInserted planet {len(planet_inserted_ids)} documents.")
 
             vstore_starship = astra(
@@ -197,41 +221,45 @@ def main():
                 api_endpoint=ASTRA_DB_API_ENDPOINT,
                 token=ASTRA_DB_APPLICATION_TOKEN,
             )
-            species_inserted_ids = vstore_species.add_documents(species_docs) # ss
+            species_inserted_ids = vstore_species.add_documents(species_docs) # species
             print(f"\nInserted species {len(species_inserted_ids)} documents.")
 
+            # k = # nearest neighbors/most similar vectors to retrieve/query in a vector db
             char_sim_search = vstore_char.similarity_search(char_inp, k = 3) 
             vehicle_sim_search = vstore_vehicle.similarity_search(vehicle_inp, k = 3) 
             planet_sim_search = vstore_planet.similarity_search(planet_inp, k = 3) 
             starship_sim_search = vstore_starship.similarity_search(starship_inp, k = 3) 
             species_sim_search = vstore_species.similarity_search(species_inp, k = 3) 
             
-            print(f'char_sim_search {char_sim_search}, vehicle_sim_search {vehicle_sim_search}, planet_sim_search {planet_sim_search}, starship_sim_search {starship_sim_search}, species_sim_search {species_sim_search}') #  
+            print(f'char_sim_search {char_sim_search}, vehicle_sim_search {vehicle_sim_search}, planet_sim_search {planet_sim_search}, starship_sim_search {starship_sim_search}, species_sim_search {species_sim_search}') #  sim search results
 
-            # story = query_hermes({
-            #     "prompt": f"You are a world-renowned Star Wars fanfiction writer. Generate a Star Wars fanfiction story about a character like {char_sim_search} who meets a character of the {species_sim_search} species who drives a vehicle like {vehicle_sim_search}. To leave the planet, they encounter characters on a planet like {planet_sim_search} who leave on a starship like {starship_sim_search}", # on a planet like {planet_sim_search} drive a starship like a {starship_sim_search}
+            # map salacious rating strings to actual movie ratings like g, pg, pg13, r
+            sal_dict = dict(g= sal_labels[0], pg = sal_labels[1], pg13 = sal_labels[2], r = sal_labels[3])
+            movie_rating = list(sal_dict.keys())[list(sal_dict.values()).index(salaciousness_met)]
 
-            # })
-            # story = story['result']["response"]
-            # print(story)
-            sum_query = query_llama1(char_sim_search, species_sim_search, vehicle_sim_search, planet_sim_search, starship_sim_search)
+            sum_query = generate_text_from_sim_search(char_sim_search, species_sim_search, vehicle_sim_search, planet_sim_search, starship_sim_search, url)
             print(sum_query)
-            story = query_llama2(sum_query)
-            print(story)
 
-            # img = query_sdxl({
-            #     "prompt": f"You are a world-renowned painter of Star Wars-related art. Generate an image about a character like {char_sim_search} in front of a vehicle like {vehicle_sim_search}" # or a starship like {starship_sim_search} 
-
-            # # })
-            # print(img)
-            # # img = Image.open(img)
-            # st.image(img)
+            story = gen_story_from_sim_search_and_movie_rating(sum_query, movie_rating, url)['result']['response']
+            
+            img_prompt = f"You are a world-renowned painter of lighthearted Star Wars-related art. Generate a humorous {movie_rating}-rated image relating to {sum_query}"
+            #img_prompt = f"Generate a seductive image of Jar Jar Binks"
+            img_url =f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/{img_model}"
+            headers = {
+                "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+            }
+            resp = requests.post(
+                img_url,
+                headers=headers,
+                json={"prompt": img_prompt},
+            )
+            st.image(resp.content, caption=f"AI-generated image from {img_model}") #bytes lmao
             
             html_str = f"""
-            <p style="font-family:Arial; color:Pink; font-size: 16px;">Story: {story}</p>
+            <p style="font-family:Comic Sans; color:Pink; font-size: 18px;">{story}</p>
             """
             st.markdown(html_str, unsafe_allow_html=True)
-    st.write("Made w/ ❤️ in Hawaii 🏝️🌺")
+    st.write("Made w/ ❤️ in Hawaii 🏝️🌺 && Portland ☔️🌳")
     st.write("✅ out the [code on GitHub](https://github.com/elizabethsiegle/star-wars-fanfic-generator-streamlit-astra-cf)")
 
 
